@@ -9,8 +9,8 @@ from compiler.scanner import Scanner
 from compiler.parser import Parser
 from compiler.ast_nodes import AstBuilder
 from compiler.semantic import SemanticAnalyzer
-
 from compiler.regex_search import search as regex_search, SEARCH_TASKS
+from compiler.expr_parser import ExprParser, to_polish, evaluate_polish
 
 APP_TITLE = "Текстовый редактор"
 ICONS_DIR = Path(__file__).parent / "resources" / "icons"
@@ -55,9 +55,24 @@ class MainWindow(QMainWindow):
         self.ast_json_view.setReadOnly(True)
         self.ast_json_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
 
+        self.quads_view = QPlainTextEdit()
+        self.quads_view.setReadOnly(True)
+        self.quads_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+
+        self.polish_view = QPlainTextEdit()
+        self.polish_view.setReadOnly(True)
+        self.polish_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+
+        self.result_view = QPlainTextEdit()
+        self.result_view.setReadOnly(True)
+        self.result_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+
         self.ast_tabs = QTabWidget()
         self.ast_tabs.addTab(self.ast_tree_view, "Дерево AST")
         self.ast_tabs.addTab(self.ast_json_view, "JSON")
+        self.ast_tabs.addTab(self.quads_view, "Тетрады")
+        self.ast_tabs.addTab(self.polish_view, "ПОЛИЗ")
+        self.ast_tabs.addTab(self.result_view, "Результат")
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.addWidget(self.editor)
@@ -95,6 +110,7 @@ class MainWindow(QMainWindow):
         self.run_parser_action = QAction("Синтаксический анализ", self)
         self.run_regex_action = QAction("Поиск подстрок", self)
         self.run_semantic_action = QAction("Семантический анализ и AST", self)
+        self.run_vpp_action = QAction("Внутренняя форма программы", self)
 
         self.help_action = QAction("Вызов справки", self)
         self.about_action = QAction("О программе", self)
@@ -121,6 +137,7 @@ class MainWindow(QMainWindow):
         self.run_parser_action.setShortcut(QKeySequence("F6"))
         self.run_regex_action.setShortcut(QKeySequence("F7"))
         self.run_semantic_action.setShortcut(QKeySequence("F8"))
+        self.run_vpp_action.setShortcut(QKeySequence("F9"))
 
         self.help_action.setShortcut(QKeySequence.StandardKey.HelpContents)
 
@@ -141,6 +158,7 @@ class MainWindow(QMainWindow):
             self.run_parser_action: "run_synt.png",
             self.run_regex_action: "run.png",
             self.run_semantic_action: "run_sem.png",
+            self.run_vpp_action: "run.png",
         }
 
         for action, filename in icon_map.items():
@@ -187,6 +205,7 @@ class MainWindow(QMainWindow):
         run_menu.addAction(self.run_parser_action)
         run_menu.addAction(self.run_semantic_action)
         run_menu.addSeparator()
+        run_menu.addAction(self.run_vpp_action)
         run_menu.addAction(self.run_regex_action)
 
         help_menu = menu_bar.addMenu("Справка")
@@ -213,6 +232,7 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.run_lexer_action)
         toolbar.addAction(self.run_parser_action)
         toolbar.addAction(self.run_semantic_action)
+        toolbar.addAction(self.run_vpp_action)
         toolbar.addSeparator()
         toolbar.addAction(self.help_action)
         toolbar.addAction(self.about_action)
@@ -259,6 +279,7 @@ class MainWindow(QMainWindow):
         self.run_parser_action.triggered.connect(self._on_run_parser)
         self.run_regex_action.triggered.connect(self._on_run_regex)
         self.run_semantic_action.triggered.connect(self._on_run_semantic)
+        self.run_vpp_action.triggered.connect(self._on_run_vpp)
 
         self.help_action.triggered.connect(self._on_show_help)
         self.about_action.triggered.connect(self._on_show_about)
@@ -548,6 +569,79 @@ class MainWindow(QMainWindow):
 
         self.statusBar().showMessage(f"Семантических ошибок: {total_errors}")
 
+    def _on_run_vpp(self):
+        self.current_mode = "vpp"
+        text = self.editor.toPlainText()
+
+        scanner = Scanner()
+        tokens, _ = scanner.scan(text)
+
+        parser = ExprParser()
+        errors, quads, _ = parser.parse(tokens)
+
+        self.result_table.setColumnCount(3)
+        self.result_table.setHorizontalHeaderLabels(["Тип ошибки", "Сообщение", "Позиция"])
+        self.result_table.setRowCount(0)
+
+        red_bg = QColor(255, 220, 220)
+        red_fg = QColor(180, 0, 0)
+
+        for err in errors:
+            row = self.result_table.rowCount()
+            self.result_table.insertRow(row)
+            kind_item = QTableWidgetItem("Ошибка")
+            message_item = QTableWidgetItem(err.message)
+            pos_item = QTableWidgetItem(f"Строка {err.line}, позиция {err.col}")
+            for item in (kind_item, message_item, pos_item):
+                item.setBackground(QBrush(red_bg))
+                item.setForeground(QBrush(red_fg))
+            self.result_table.setItem(row, 0, kind_item)
+            self.result_table.setItem(row, 1, message_item)
+            self.result_table.setItem(row, 2, pos_item)
+
+        total_errors = len(errors)
+        row = self.result_table.rowCount()
+        self.result_table.insertRow(row)
+        if total_errors == 0:
+            summary = QTableWidgetItem("Ошибок нет")
+        else:
+            summary = QTableWidgetItem(f"Итого: ошибок - {total_errors}")
+        font = summary.font()
+        font.setBold(True)
+        summary.setFont(font)
+        summary.setBackground(QBrush(QColor(230, 230, 230)))
+        self.result_table.setItem(row, 0, summary)
+        self.result_table.setSpan(row, 0, 1, 3)
+
+        self.statusBar().showMessage(f"Ошибок: {total_errors}")
+
+        if errors:
+            self.quads_view.setPlainText("Разбор не выполнен из-за ошибок")
+            self.polish_view.setPlainText("Разбор не выполнен из-за ошибок")
+            self.result_view.setPlainText("Разбор не выполнен из-за ошибок")
+            return
+
+        if not quads:
+            self.quads_view.setPlainText("Тетрады отсутствуют")
+            self.polish_view.setPlainText("ПОЛИЗ отсутствует")
+            self.result_view.setPlainText("Нечего вычислять")
+            return
+
+        quads_text = "\n".join(
+            f"{i + 1}. ({q.op}, {q.arg1}, {q.arg2}, {q.result})"
+            for i, q in enumerate(quads)
+        )
+        self.quads_view.setPlainText(quads_text)
+
+        polish = to_polish(tokens)
+        self.polish_view.setPlainText(" ".join(polish))
+
+        value, msg = evaluate_polish(polish)
+        if value is not None:
+            self.result_view.setPlainText(str(value))
+        else:
+            self.result_view.setPlainText(msg if msg else "Не вычислимо")
+
     def _display_lexeme(self, token):
         if token.type == "WHITESPACE":
             if "\t" in token.lexeme:
@@ -558,6 +652,13 @@ class MainWindow(QMainWindow):
     def _on_table_clicked(self, item):
         row = item.row()
 
+        if self.current_mode == "vpp":
+            location_item = self.result_table.item(row, 2)
+            if not location_item:
+                return
+            self._highlight_in_editor(location_item.text(), 1)
+            return
+        
         if self.current_mode == "semantic":
             location_item = self.result_table.item(row, 2)
             if not location_item:
@@ -635,6 +736,7 @@ class MainWindow(QMainWindow):
             "Лексический анализ - разбор текста на лексемы.<br>"
             "Синтаксический анализ (F6) - проверка структуры объявлений.<br>"
             "Семантический анализ и AST (F8) - построение дерева и проверка семантики.<br>"
+            "Внутренняя форма программы (F9) - тетрады и ПОЛИЗ для арифметики.<br>"
             "Поиск подстрок (F7) - поиск ОГРН, комментариев Pascal или RGB-цветов.<br><br>"
             "<b>Справка (F1)</b><br>"
             "Вызов этого руководства и сведений о программе."
@@ -644,8 +746,8 @@ class MainWindow(QMainWindow):
     def _on_show_about(self):
         text = (
             f"<b>{APP_TITLE}</b><br><br>"
-            "Лабораторная работа №5<br>"
-            "«Построение AST и проверка контекстно-зависимых условий»<br><br>"
+            "Лабораторная работа №6<br>"
+            "«Создание внутренней формы представления программы»<br><br>"
             "<b>Тема:</b> Объявление структуры на языке Java<br><br>"
             "<b>Автор:</b> Башинов Арья Игоревич, группа АП-326"
         )
